@@ -4,23 +4,19 @@ from typing import Dict, List
 from mlb_api import MLBDataFetcher  # Ensure mlb_api.py has this class
 
 class StrikeoutPredictor:
-    """Generates strikeout predictions based on pitcher-batter matchups"""
-
     def __init__(self):
         self.pitcher_weight = 0.6
         self.batter_weight = 0.4
         self.league_avg_pitcher_so = 15.0
         self.league_avg_batter_so = 22.0
-        self.min_batter_ab = 150  # ✅ Minimum AB filter
+        self.min_batter_ab = 150
 
     def predict_strikeouts(self, matchups_df: pd.DataFrame, threshold: float = 20.0) -> pd.DataFrame:
-        if matchups_df.empty or 'batter_at_bats' not in matchups_df.columns:
+        if matchups_df.empty:
             return pd.DataFrame()
 
-        # ✅ Filter out batters with fewer than 150 AB
         matchups_df = matchups_df[matchups_df['batter_at_bats'] >= self.min_batter_ab]
 
-        # Keep only matchups with high strikeout potential
         high_rate_matchups = matchups_df[
             (matchups_df['pitcher_so_rate'] >= threshold) &
             (matchups_df['batter_so_rate'] >= threshold)
@@ -32,9 +28,7 @@ class StrikeoutPredictor:
         high_rate_matchups['confidence_score'] = self._calculate_confidence_score(high_rate_matchups)
         high_rate_matchups['strikeout_probability'] = self._calculate_strikeout_probability(high_rate_matchups)
 
-        high_rate_matchups = high_rate_matchups.sort_values('strikeout_probability', ascending=False)
-
-        return high_rate_matchups[[
+        return high_rate_matchups.sort_values('confidence_score', ascending=False)[[
             'batter_name', 'batter_so_rate', 'pitcher_name', 'pitcher_so_rate',
             'confidence_score', 'strikeout_probability'
         ]]
@@ -53,13 +47,8 @@ class StrikeoutPredictor:
 
         sample_confidence = (pitcher_sample_factor + batter_sample_factor) / 2
 
-        confidence = np.minimum(
-            (rate_confidence * 0.7 + sample_confidence * 0.3),
-            1.0
-        )
-        confidence = np.maximum(confidence, 0.3)
-
-        return confidence
+        confidence = np.minimum(rate_confidence * 0.7 + sample_confidence * 0.3, 1.0)
+        return np.maximum(confidence, 0.3)
 
     def _calculate_strikeout_probability(self, df: pd.DataFrame) -> pd.Series:
         pitcher_prob = df['pitcher_so_rate'] / 100.0
@@ -69,47 +58,52 @@ class StrikeoutPredictor:
         prob_no_strikeout = (1 - combined_prob) ** expected_abs
         return 1 - prob_no_strikeout
 
-# ✅ This function is required by app.py
+# ✅ This replaces your broken version of generate_whiff_watch_data
 def generate_whiff_watch_data():
     fetcher = MLBDataFetcher()
     matchups = fetcher.get_today_matchups()
 
-    full_data = []
+    full_matchups = []
 
     for game in matchups:
-        for side in ['home_pitcher', 'away_pitcher']:
-            pitcher = game.get(side)
-            if not pitcher:
+        for side in ['home', 'away']:
+            pitcher_info = game[f"{side}_pitcher"]
+            if pitcher_info is None:
                 continue
-            pitcher_stats = fetcher.get_pitcher_stats(pitcher['id'])
+
+            pitcher_id = pitcher_info['id']
+            pitcher_name = pitcher_info['name']
+            pitcher_stats = fetcher.get_pitcher_stats(pitcher_id)
             if pitcher_stats['batters_faced'] == 0:
                 continue
 
-            team_name = game['home_team'] if side == 'home_pitcher' else game['away_team']
+            team_name = game[f"{'away' if side == 'home' else 'home'}_team"]
             team_id = fetcher.get_team_id_by_name(team_name)
-            if not team_id:
+            if team_id is None:
                 continue
-            batters = fetcher.get_team_roster(team_id)
 
+            batters = fetcher.get_team_roster(team_id)
             for batter in batters:
-                batter_stats = fetcher.get_batter_stats(batter['id'])
+                batter_id = batter['id']
+                batter_name = batter['name']
+                batter_stats = fetcher.get_batter_stats(batter_id)
                 if batter_stats['at_bats'] == 0:
                     continue
 
-                full_data.append({
-                    'batter_name': batter['name'],
-                    'batter_so_rate': batter_stats['so_rate'],
-                    'batter_at_bats': batter_stats['at_bats'],
-                    'pitcher_name': pitcher['name'],
-                    'pitcher_so_rate': pitcher_stats['so_rate'],
-                    'pitcher_batters_faced': pitcher_stats['batters_faced']
+                full_matchups.append({
+                    "pitcher_name": pitcher_name,
+                    "pitcher_so_rate": pitcher_stats['so_rate'],
+                    "pitcher_batters_faced": pitcher_stats['batters_faced'],
+                    "batter_name": batter_name,
+                    "batter_so_rate": batter_stats['so_rate'],
+                    "batter_at_bats": batter_stats['at_bats']
                 })
 
-    if not full_data:
+    df = pd.DataFrame(full_matchups)
+    if df.empty:
         return []
 
-    df = pd.DataFrame(full_data)
     predictor = StrikeoutPredictor()
-    ranked_df = predictor.predict_strikeouts(df)
+    ranked = predictor.predict_strikeouts(df)
 
-    return ranked_df.to_dict(orient='records') if not ranked_df.empty else []
+    return ranked.to_dict(orient="records") if not ranked.empty else []

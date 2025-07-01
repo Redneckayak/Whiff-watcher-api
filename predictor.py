@@ -72,7 +72,13 @@ class StrikeoutPredictor:
 # ✅ This function is required by app.py
 def generate_whiff_watch_data():
     fetcher = MLBDataFetcher()
-    matchups_df = fetcher.get_today_matchups()
+    matchups = fetcher.get_today_matchups()
+
+    # ✅ Convert list to DataFrame if needed
+    if isinstance(matchups, list):
+        matchups_df = pd.DataFrame(matchups)
+    else:
+        matchups_df = matchups
 
     predictor = StrikeoutPredictor()
     ranked_df = predictor.predict_strikeouts(matchups_df)

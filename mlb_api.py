@@ -167,3 +167,33 @@ class MLBDataFetcher:
         except Exception as e:
             print(f"Failed to find team ID: {e}")
             return None
+
+    def get_today_matchups(self) -> List[Dict]:
+        """Fetch today’s MLB matchups including probable starting pitchers"""
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        url = f"{self.base_url}/schedule?sportId=1&date={date_str}&hydrate=team,linescore,probablePitcher"
+        response = self.session.get(url)
+        data = response.json()
+
+        matchups = []
+
+        for date in data.get("dates", []):
+            for game in date.get("games", []):
+                matchup = {
+                    "game_id": game.get("gamePk"),
+                    "home_team": game["teams"]["home"]["team"]["name"],
+                    "away_team": game["teams"]["away"]["team"]["name"],
+                    "home_pitcher": self._get_pitcher_info(game["teams"]["home"].get("probablePitcher")),
+                    "away_pitcher": self._get_pitcher_info(game["teams"]["away"].get("probablePitcher"))
+                }
+                matchups.append(matchup)
+
+        return matchups
+
+    def _get_pitcher_info(self, pitcher: Optional[Dict]) -> Optional[Dict]:
+        if not pitcher:
+            return None
+        return {
+            "id": pitcher.get("id"),
+            "name": pitcher.get("fullName")
+        }

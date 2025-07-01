@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 from typing import Dict, List
+from mlb_api import MLBDataFetcher  # Ensure mlb_api.py has this class
 
 class StrikeoutPredictor:
     """Generates strikeout predictions based on pitcher-batter matchups"""
@@ -67,3 +68,17 @@ class StrikeoutPredictor:
         expected_abs = 3.5
         prob_no_strikeout = (1 - combined_prob) ** expected_abs
         return 1 - prob_no_strikeout
+
+# ✅ This function is required by app.py
+def generate_whiff_watch_data():
+    fetcher = MLBDataFetcher()
+    matchups_df = fetcher.get_today_matchups()
+
+    predictor = StrikeoutPredictor()
+    ranked_df = predictor.predict_strikeouts(matchups_df)
+
+    if ranked_df.empty:
+        return []
+
+    result = ranked_df.to_dict(orient='records')
+    return result

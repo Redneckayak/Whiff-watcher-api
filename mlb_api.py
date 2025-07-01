@@ -2,7 +2,6 @@ import requests
 import json
 from datetime import datetime, date
 from typing import List, Dict, Optional
-import streamlit as st
 
 class MLBDataFetcher:
     """Handles all MLB API data fetching operations"""
@@ -13,246 +12,158 @@ class MLBDataFetcher:
         self.session.headers.update({
             'User-Agent': 'WhiffWatcher/1.0'
         })
-    
-    @st.cache_data(ttl=300)
-    def get_todays_games(_self, target_date: date) -> List[Dict]:
-        """Fetch today's MLB games with starting lineups"""
-        
+
+    def get_todays_games(self, target_date: date) -> List[Dict]:
         date_str = target_date.strftime('%Y-%m-%d')
-        
         try:
-            # Get schedule for the date with lineup data
-            schedule_url = f"{_self.base_url}/schedule"
+            schedule_url = f"{self.base_url}/schedule"
             params = {
-                'sportId': 1,  # MLB
+                'sportId': 1,
                 'date': date_str,
                 'hydrate': 'team,linescore,probablePitcher,lineups'
             }
-            
-            response = _self.session.get(schedule_url, params=params, timeout=10)
+            response = self.session.get(schedule_url, params=params, timeout=10)
             response.raise_for_status()
-            
             schedule_data = response.json()
-            
             if not schedule_data.get('dates'):
                 return []
-            
+
             games = []
             for date_info in schedule_data['dates']:
                 for game in date_info.get('games', []):
-                    # Include all games (Preview, Live, Final) to get matchup data
-                    game_info = _self._extract_game_info(game)
+                    game_info = self._extract_game_info(game)
                     if game_info:
                         games.append(game_info)
-            
             return games
-            
-        except requests.RequestException as e:
-            raise Exception(f"Failed to fetch MLB schedule: {str(e)}")
+
         except Exception as e:
-            raise Exception(f"Error processing MLB data: {str(e)}")
-    
+            print(f"Error fetching MLB games: {e}")
+            return []
+
     def _extract_game_info(self, game: Dict) -> Optional[Dict]:
-        """Extract relevant game information"""
-        
         try:
             game_id = game['gamePk']
-            
-            # Extract team information
             away_team = game['teams']['away']['team']['name']
             home_team = game['teams']['home']['team']['name']
-            
-            # Extract probable pitchers
+
             away_pitcher = None
             home_pitcher = None
-            
+
             if 'probablePitcher' in game['teams']['away']:
                 away_pitcher = {
                     'id': game['teams']['away']['probablePitcher']['id'],
                     'name': game['teams']['away']['probablePitcher']['fullName']
                 }
-            
+
             if 'probablePitcher' in game['teams']['home']:
                 home_pitcher = {
                     'id': game['teams']['home']['probablePitcher']['id'],
                     'name': game['teams']['home']['probablePitcher']['fullName']
                 }
-            
-            # Game time
-            game_time = game.get('gameDate')
-            
+
             return {
                 'game_id': game_id,
                 'away_team': away_team,
                 'home_team': home_team,
                 'away_pitcher': away_pitcher,
                 'home_pitcher': home_pitcher,
-                'game_time': game_time,
+                'game_time': game.get('gameDate'),
                 'status': game.get('status', {}).get('detailedState', 'Unknown')
             }
-            
+
         except KeyError as e:
-            st.warning(f"Missing game data field: {str(e)}")
+            print(f"Missing game field: {e}")
             return None
-    
-    @st.cache_data(ttl=3600)
-    def get_pitcher_stats(_self, pitcher_id: int, season: int = None) -> Dict:
-        """Get pitcher statistics for strikeout rate calculation"""
-        
+
+    def get_pitcher_stats(self, pitcher_id: int, season: int = None) -> Dict:
         if season is None:
             season = datetime.now().year
-            
-        # Try current season first, then fallback to previous season
-        seasons_to_try = [season, season - 1]
-        
-        for try_season in seasons_to_try:
+        for try_season in [season, season - 1]:
             try:
-                stats_url = f"{_self.base_url}/people/{pitcher_id}/stats"
-                params = {
-                    'stats': 'season',
-                    'group': 'pitching',
-                    'season': try_season
-                }
-                
-                response = _self.session.get(stats_url, params=params, timeout=10)
+                stats_url = f"{self.base_url}/people/{pitcher_id}/stats"
+                params = {'stats': 'season', 'group': 'pitching', 'season': try_season}
+                response = self.session.get(stats_url, params=params, timeout=10)
                 response.raise_for_status()
-                
                 data = response.json()
-                
-                # Extract pitching stats
-                if data.get('stats') and len(data['stats']) > 0:
-                    if data['stats'][0].get('splits') and len(data['stats'][0]['splits']) > 0:
-                        stats = data['stats'][0]['splits'][0]['stat']
-                        
-                        strikeouts = float(stats.get('strikeOuts', 0))
-                        batters_faced = float(stats.get('battersFaced', 0))
-                        
-                        if batters_faced > 0:
-                            so_rate = (strikeouts / batters_faced) * 100
-                            return {
-                                'strikeouts': strikeouts,
-                                'batters_faced': batters_faced,
-                                'so_rate': so_rate,
-                                'innings_pitched': float(stats.get('inningsPitched', 0)),
-                                'era': float(stats.get('era', 0.0))
-                            }
+                if data.get('stats') and data['stats'][0].get('splits'):
+                    stats = data['stats'][0]['splits'][0]['stat']
+                    so = float(stats.get('strikeOuts', 0))
+                    bf = float(stats.get('battersFaced', 0))
+                    if bf > 0:
+                        return {
+                            'strikeouts': so,
+                            'batters_faced': bf,
+                            'so_rate': (so / bf) * 100,
+                            'innings_pitched': float(stats.get('inningsPitched', 0)),
+                            'era': float(stats.get('era', 0.0))
+                        }
             except:
                 continue
-        
         return {'so_rate': 0.0, 'strikeouts': 0, 'batters_faced': 0}
-    
-    @st.cache_data(ttl=3600)
-    def get_team_roster(_self, team_id: int) -> List[Dict]:
-        """Get complete team roster including all batters"""
-        
+
+    def get_batter_stats(self, batter_id: int, season: int = None) -> Dict:
+        if season is None:
+            season = datetime.now().year
+        for try_season in [season, season - 1]:
+            try:
+                stats_url = f"{self.base_url}/people/{batter_id}/stats"
+                params = {'stats': 'season', 'group': 'hitting', 'season': try_season}
+                response = self.session.get(stats_url, params=params, timeout=10)
+                response.raise_for_status()
+                data = response.json()
+                if data.get('stats') and data['stats'][0].get('splits'):
+                    stats = data['stats'][0]['splits'][0]['stat']
+                    so = float(stats.get('strikeOuts', 0))
+                    ab = float(stats.get('atBats', 0))
+                    if ab > 0:
+                        return {
+                            'strikeouts': so,
+                            'at_bats': ab,
+                            'so_rate': (so / ab) * 100,
+                            'avg': float(stats.get('avg', 0.0)),
+                            'ops': float(stats.get('ops', 0.0))
+                        }
+            except:
+                continue
+        return {'so_rate': 0.0, 'strikeouts': 0, 'at_bats': 0}
+
+    def get_team_roster(self, team_id: int) -> List[Dict]:
         try:
-            # Try multiple roster types to get comprehensive data
-            roster_types = ['active', 'fullSeason', '40Man']
-            all_batters = {}  # Use dict to avoid duplicates
-            
-            for roster_type in roster_types:
+            all_batters = {}
+            for roster_type in ['active', 'fullSeason', '40Man']:
                 try:
-                    roster_url = f"{_self.base_url}/teams/{team_id}/roster"
+                    url = f"{self.base_url}/teams/{team_id}/roster"
                     params = {'rosterType': roster_type}
-                    
-                    response = _self.session.get(roster_url, params=params, timeout=10)
-                    response.raise_for_status()
-                    
-                    data = response.json()
-                    
+                    resp = self.session.get(url, params=params, timeout=10)
+                    resp.raise_for_status()
+                    data = resp.json()
                     for player in data.get('roster', []):
-                        # Include all non-pitcher positions (Infielder, Outfielder, Catcher)
                         if player['position']['type'] != 'Pitcher':
-                            player_id = player['person']['id']
-                            if player_id not in all_batters:
-                                all_batters[player_id] = {
-                                    'id': player_id,
+                            pid = player['person']['id']
+                            if pid not in all_batters:
+                                all_batters[pid] = {
+                                    'id': pid,
                                     'name': player['person']['fullName'],
                                     'position': player['position']['name']
                                 }
                 except Exception as e:
-                    print(f"DEBUG: Failed to get {roster_type} roster for team {team_id}: {e}")
-                    continue  # Try next roster type if this one fails
-            
-            roster = list(all_batters.values())
-
-            
-
-            
-            return roster
-            
-        except requests.RequestException as e:
-            st.warning(f"Failed to fetch team roster: {str(e)}")
-            return []
+                    print(f"Roster error: {e}")
+                    continue
+            return list(all_batters.values())
         except Exception as e:
-            st.warning(f"Error processing roster data: {str(e)}")
+            print(f"Failed to get roster: {e}")
             return []
-    
-    @st.cache_data(ttl=3600)
-    def get_batter_stats(_self, batter_id: int, season: int = None) -> Dict:
-        """Get batter statistics for strikeout rate calculation"""
-        
-        if season is None:
-            season = datetime.now().year
-        
-        # Try current season first, then fallback to previous season
-        seasons_to_try = [season, season - 1]
-        
-        for try_season in seasons_to_try:
-            try:
-                stats_url = f"{_self.base_url}/people/{batter_id}/stats"
-                params = {
-                    'stats': 'season',
-                    'group': 'hitting',
-                    'season': try_season
-                }
-                
-                response = _self.session.get(stats_url, params=params, timeout=10)
-                response.raise_for_status()
-                
-                data = response.json()
-                
-                # Extract hitting stats
-                if data.get('stats') and len(data['stats']) > 0:
-                    if data['stats'][0].get('splits') and len(data['stats'][0]['splits']) > 0:
-                        stats = data['stats'][0]['splits'][0]['stat']
-                        
-                        strikeouts = float(stats.get('strikeOuts', 0))
-                        at_bats = float(stats.get('atBats', 0))
-                        
-                        if at_bats > 0:
-                            so_rate = (strikeouts / at_bats) * 100
-                            return {
-                                'strikeouts': strikeouts,
-                                'at_bats': at_bats,
-                                'so_rate': so_rate,
-                                'avg': float(stats.get('avg', 0.0)),
-                                'ops': float(stats.get('ops', 0.0))
-                            }
-            except:
-                continue
-        
-        return {'so_rate': 0.0, 'strikeouts': 0, 'at_bats': 0}
-    
-    @st.cache_data(ttl=3600)
-    def get_team_id_by_name(_self, team_name: str) -> Optional[int]:
-        """Get team ID by team name"""
-        
+
+    def get_team_id_by_name(self, team_name: str) -> Optional[int]:
         try:
-            teams_url = f"{_self.base_url}/teams"
-            params = {'sportId': 1}
-            
-            response = _self.session.get(teams_url, params=params, timeout=10)
+            teams_url = f"{self.base_url}/teams"
+            response = self.session.get(teams_url, params={'sportId': 1}, timeout=10)
             response.raise_for_status()
-            
             data = response.json()
-            
             for team in data.get('teams', []):
                 if team['name'] == team_name:
                     return team['id']
-            
             return None
-            
         except Exception as e:
-            st.warning(f"Failed to get team ID for {team_name}: {str(e)}")
+            print(f"Failed to find team ID: {e}")
             return None

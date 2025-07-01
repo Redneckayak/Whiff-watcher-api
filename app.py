@@ -1,74 +1,80 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, Response
+import json
 from datetime import date
-from mlb_api import MLBDataFetcher
 from predictor import StrikeoutPredictor
+from mlb_api import MLBDataFetcher
 
 app = Flask(__name__)
 
 @app.route('/')
-def index():
-    return "Welcome to Whiff Watcher API!"
+def home():
+    return 'Whiff Watcher API is running!'
 
 @app.route('/api/whiff-watch', methods=['GET'])
 def generate_whiff_watch_data():
-    fetcher = MLBDataFetcher()
-    predictor = StrikeoutPredictor()
+    try:
+        # Initialize helpers
+        fetcher = MLBDataFetcher()
+        predictor = StrikeoutPredictor()
 
-    today = date.today()
-    games = fetcher.get_todays_games(today)
+        # Get today’s matchups
+        matchups = fetcher.get_todays_games(date.today())
+        all_data = []
 
-    matchups = []
+        for game in matchups:
+            for side in ['home', 'away']:
+                pitcher = game.get(f'{side}_pitcher')
+                team_name = game.get(f'{side}_team')
+                
+                if not pitcher or not team_name:
+                    continue
+                
+                team_id = fetcher.get_team_id_by_name(team_name)
+                if not team_id:
+                    continue
 
-    for game in games:
-        for side in ['away', 'home']:
-            pitcher_info = game.get(f'{side}_pitcher')
-            if not pitcher_info:
-                continue
+                batters = fetcher.get_team_roster(team_id)
+                pitcher_stats = fetcher.get_pitcher_stats(pitcher['id'])
 
-            pitcher_stats = fetcher.get_pitcher_stats(pitcher_info['id'])
-            if pitcher_stats['batters_faced'] < 50:
-                continue  # Skip pitchers with low sample size
+                for batter in batters:
+                    batter_stats = fetcher.get_batter_stats(batter['id'])
+                    if batter_stats['at_bats'] < 10:
+                        continue  # skip players with small sample sizes
 
-            team_name = game[f'{side}_team']
-            team_id = fetcher.get_team_id_by_name(team_name)
-            if not team_id:
-                continue
+                    row = {
+                        'batter_name': batter['name'],
+                        'pitcher_name': pitcher['name'],
+                        'batter_so_rate': batter_stats['so_rate'],
+                        'pitcher_so_rate': pitcher_stats['so_rate'],
+                        'batter_at_bats': batter_stats['at_bats'],
+                        'pitcher_batters_faced': pitcher_stats['batters_faced']
+                    }
 
-            roster = fetcher.get_team_roster(team_id)
-            for batter in roster:
-                batter_stats = fetcher.get_batter_stats(batter['id'])
-                if batter_stats['at_bats'] < 30:
-                    continue  # Skip batters with low sample size
+                    all_data.append(row)
 
-                matchup = {
-                    'pitcher_name': pitcher_info['name'],
-                    'pitcher_so_rate': pitcher_stats['so_rate'],
-                    'pitcher_batters_faced': pitcher_stats['batters_faced'],
-                    'batter_name': batter['name'],
-                    'batter_so_rate': batter_stats['so_rate'],
-                    'batter_at_bats': batter_stats['at_bats']
-                }
-                matchups.append(matchup)
+        import pandas as pd
+        df = pd.DataFrame(all_data)
+        predictions = predictor.predict_strikeouts(df)
 
-    import pandas as pd
-    matchups_df = pd.DataFrame(matchups)
-    predictions_df = predictor.predict_strikeouts(matchups_df)
+        if predictions.empty:
+            return jsonify([])
 
-    if predictions_df.empty:
-        return jsonify([])
+        # Format response
+        json_data = predictions[[
+            'batter_name',
+            'batter_so_rate',
+            'confidence_score',
+            'pitcher_name',
+            'pitcher_so_rate',
+            'prediction_reason',
+            'strikeout_probability'
+        ]].to_dict(orient='records')
 
-    ranked_df = predictor.rank_predictions(predictions_df)
-    output = ranked_df.head(10)[[
-        'pitcher_name',
-        'batter_name',
-        'pitcher_so_rate',
-        'batter_so_rate',
-        'confidence_score',
-        'strikeout_probability',
-        'prediction_reason'
-    ]].to_dict(orient='records')
+        return Response(json.dumps(json_data, indent=2), mimetype='application/json')
 
-    return jsonify(output)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)
+    app.run(debug=False, host='0.0.0.0', port=10000)
